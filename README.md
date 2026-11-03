@@ -12,7 +12,7 @@ Isi di dasbor layanan hosting (atau `.env` untuk lokal). **Jangan di-commit.** C
 | `HIVEMQ_HOST`, `HIVEMQ_PORT` (8883), `HIVEMQ_USERNAME`, `HIVEMQ_PASSWORD` | pengguna **worker** di HiveMQ: subscribe `aeros/+/telemetry` dan `aeros/+/status`; publish `aeros/+/telemetry/ack` |
 | `HMAC_SECRET` | sama persis dengan `HMAC_SECRET` di `secrets.h` ESP |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | proyek Supabase; kunci ini hanya untuk worker |
-| `WRITE_STATUS_COLUMN` | bawaan `true`. **Isi `false` bila SQL 004 (4b) sudah dijalankan**, karena `sensor_readings.status` lalu menjadi kolom turunan dan menulisnya ditolak database. |
+| `WRITE_STATUS_COLUMN` | bawaan `false`: `status` tidak ditulis, karena sejak SQL 004 (4b) kolom itu turunan dan menulisnya ditolak database. Isi `true` **hanya** untuk database yang belum 4b. |
 | `ACCEPT_V3` | bawaan `true`. Ubah ke `false` setelah ESP versi 4 terpasang, supaya pesan versi 3 ditolak. |
 | `ALLOW_DEMO_READINGS` | opsional, `true` hanya bila data simulasi (`demo`) boleh disimpan |
 
@@ -30,5 +30,5 @@ Layanan harus mendukung **background worker / proses terus-menerus** (bukan fung
 
 ## Aturan penting
 - Hanya **satu** worker aktif untuk tiap perangkat. Dua worker sekaligus memproses pesan yang sama dua kali (bacaan ganda ditolak lewat `nonce`, tetapi log dan beban jadi dobel). Matikan worker di laptop sebelum yang di hosting dinyalakan.
-- Database harus sudah dijalankan: [sql/003-mvp-4a-tambahan.sql](sql/003-mvp-4a-tambahan.sql) (kolom `co_level`, `co2_level`, `buzzer_state`, `event_id` dan view `v_alerts`) sebelum worker ini dipasang. [sql/004-mvp-4b-pemutusan.sql](sql/004-mvp-4b-pemutusan.sql) merusak worker lama; jalankan bersama `WRITE_STATUS_COLUMN=false`. Berkas 001 dan 002 adalah riwayat.
+- Database harus sudah dijalankan: [sql/003-mvp-4a-tambahan.sql](sql/003-mvp-4a-tambahan.sql) (kolom `co_level`, `co2_level`, `buzzer_state`, `event_id` dan view `v_alerts`) sebelum worker ini dipasang. [sql/004-mvp-4b-pemutusan.sql](sql/004-mvp-4b-pemutusan.sql) merusak worker lama (yang menulis `status`); worker ini aman karena bawaannya tidak menulis `status`. Berkas 001 dan 002 adalah riwayat.
 - Uji: `npm test`. Uji kirim pesan tanpa ESP: `node publish-uji.js` (hanya mencetak; `--kirim` untuk mengirim).

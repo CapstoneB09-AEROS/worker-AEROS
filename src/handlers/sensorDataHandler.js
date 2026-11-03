@@ -32,8 +32,9 @@ async function persistReading(p) {
     measured_at: p.time_valid ? new Date(p.timestamp * 1000).toISOString() : receivedAt,
     received_at: receivedAt,
   };
-  // Setelah SQL 4b kolom status menjadi turunan (diisi database): jangan ditulis.
-  if (process.env.WRITE_STATUS_COLUMN !== 'false') row.status = p.status;
+  // Sejak SQL 4b kolom status turunan (diisi database): bawaannya TIDAK ditulis.
+  // Hanya WRITE_STATUS_COLUMN=true (database sebelum 4b) yang menulisnya.
+  if ((process.env.WRITE_STATUS_COLUMN || '').trim().toLowerCase() === 'true') row.status = p.status;
   const { error } = await supabase.from('sensor_readings').insert(row);
   if (!error) return 'new';
   if (error.code !== '23505') throw new Error('INSERT sensor_readings: ' + error.message);

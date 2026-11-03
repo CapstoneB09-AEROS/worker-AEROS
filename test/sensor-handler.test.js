@@ -162,7 +162,7 @@ test('v4: baris bacaan memuat co_level, co2_level, buzzer_state, event_id, dan A
   assert.equal(calls.row.co2_level, 2);
   assert.equal(calls.row.buzzer_state, 'on');
   assert.equal(calls.row.event_id, eventId);
-  assert.equal(calls.row.status, 'bahaya');
+  assert.equal('status' in calls.row, false);   // turunan di database; bawaan tidak ditulis
   assert.equal(calls.state.status, 'bahaya');
   assert.equal(calls.ack[0].topic, 'aeros/AEROS_01/telemetry/ack');
 });
@@ -224,15 +224,23 @@ test('peringatan duplikat yang tidak dapat dibuktikan ditolak', async () => {
   assert.equal(calls.ack.length, 0);
 });
 
-test('WRITE_STATUS_COLUMN: status ditulis secara bawaan, tidak ditulis bila false', async () => {
+test('WRITE_STATUS_COLUMN: bawaan tidak menulis status; true menulisnya (tidak peka huruf/spasi)', async () => {
   reset();
-  await send(inputV4({ co2_level: 1, event_id: eventId, buzzer_state: 'on' }));
-  assert.equal(calls.row.status, 'waspada');
-  reset();
-  process.env.WRITE_STATUS_COLUMN = 'false';
   await send(inputV4({ co2_level: 1, event_id: eventId, buzzer_state: 'on' }));
   assert.equal('status' in calls.row, false);
   assert.equal(calls.row.co2_level, 1);
   assert.equal(calls.ack.length, 1);
+  for (const nilai of ['false', 'False', ' false ', '"false"', '']) {
+    reset();
+    process.env.WRITE_STATUS_COLUMN = nilai;
+    await send(inputV4({ co2_level: 1, event_id: eventId, buzzer_state: 'on' }));
+    assert.equal('status' in calls.row, false, `nilai ${JSON.stringify(nilai)}`);
+  }
+  for (const nilai of ['true', 'TRUE', ' True ']) {
+    reset();
+    process.env.WRITE_STATUS_COLUMN = nilai;
+    await send(inputV4({ co2_level: 1, event_id: eventId, buzzer_state: 'on' }));
+    assert.equal(calls.row.status, 'waspada', `nilai ${JSON.stringify(nilai)}`);
+  }
   reset();
 });
