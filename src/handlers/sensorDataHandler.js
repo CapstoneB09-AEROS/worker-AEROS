@@ -3,22 +3,37 @@ const { verifyReading, signedDataAck } = require('../services/securityService');
 const { assertActiveDevice } = require('../services/deviceRegistry');
 const { mirrorRecentTelemetry } = require('../services/telemetryStateService');
 
+// Peringatan harus ada sebelum bacaan disimpan: sensor_readings.event_id memakai kunci tamu ke alert_logs.
+// created_at tidak diisi: database memakai now() (jam worker).
+async function pastikanPeringatan(p) {
+  if (!p.event_id) return;
+  const { error } = await supabase.from('alert_logs').insert({
+    id: p.event_id, device_id: p.device_id, alert_type: p.status,
+  });
+  if (!error) return;
+  if (error.code !== '23505') throw new Error('INSERT alert_logs: ' + error.message);
+  // Pesan ulang yang sah: peringatan sudah ada. Pastikan miliknya sendiri.
+  const found = await supabase.from('alert_logs').select('device_id').eq('id', p.event_id).maybeSingle();
+  if (found.error || !found.data) throw new Error('Peringatan duplikat belum dapat dibuktikan');
+  if (found.data.device_id !== p.device_id) throw new Error('event_id milik perangkat lain');
+}
+
 async function persistReading(p) {
   const receivedAt = new Date().toISOString();
   const row = {
     device_id: p.device_id, nonce: p.nonce,
-    co_ppm: p.co_ppm, co2_ppm: p.co2_ppm, status: p.status,
+    co_ppm: p.co_ppm, co2_ppm: p.co2_ppm,
+    co_peak_ppm: p.co_peak_ppm, co2_peak_ppm: p.co2_peak_ppm,
+    co_peak_second: p.co_peak_second, co2_peak_second: p.co2_peak_second,
+    co_level: p.co_level, co2_level: p.co2_level,
+    buzzer_state: p.buzzer_state, event_id: p.event_id,
     window_status: p.window_status,
     // No NTP on first boot: receivedAt is an estimate, not a true measurement timestamp.
     measured_at: p.time_valid ? new Date(p.timestamp * 1000).toISOString() : receivedAt,
     received_at: receivedAt,
   };
-  if (p.version === 3) {
-    Object.assign(row, {
-      co_peak_ppm: p.co_peak_ppm, co2_peak_ppm: p.co2_peak_ppm,
-      co_peak_second: p.co_peak_second, co2_peak_second: p.co2_peak_second,
-    });
-  }
+  // Setelah SQL 4b kolom status menjadi turunan (diisi database): jangan ditulis.
+  if (process.env.WRITE_STATUS_COLUMN !== 'false') row.status = p.status;
   const { error } = await supabase.from('sensor_readings').insert(row);
   if (!error) return 'new';
   if (error.code !== '23505') throw new Error('INSERT sensor_readings: ' + error.message);
@@ -39,6 +54,7 @@ async function handleSensorMessage(mqttClient, rawPayload, topicDeviceId = null)
       throw new Error('Pembacaan simulasi diblokir (ALLOW_DEMO_READINGS=false)');
     }
     await assertActiveDevice(p.device_id);
+    await pastikanPeringatan(p);
     const status = await persistReading(p);
     // DB ACK confirms the telemetry row; mirroring state/alerts is best-effort
     // and must not cause already-stored offline data to be retransmitted forever.
@@ -48,8 +64,7 @@ async function handleSensorMessage(mqttClient, rawPayload, topicDeviceId = null)
       console.error('[STATE MIRROR]', p.device_id, err.message);
     }
     // Only after DB confirms insert or verified duplicate.
-    mqttClient.publish('aeros/' + p.device_id +
-      (p.version === 3 ? '/telemetry/ack' : '/data/ack'),
+    mqttClient.publish('aeros/' + p.device_id + '/telemetry/ack',
       JSON.stringify(signedDataAck(p.device_id, p.nonce)), { qos: 1, retain: false },
       (err) => { if (err) console.error('[ACK DATA]', err.message); });
     console.log('[READING]', p.device_id, p.nonce, status,
@@ -58,5 +73,5 @@ async function handleSensorMessage(mqttClient, rawPayload, topicDeviceId = null)
     console.warn('[READING REJECTED]', err.message);
   }
 }
-module.exports = { handleSensorMessage, persistReading };
+module.exports = { handleSensorMessage, persistReading, pastikanPeringatan };
 

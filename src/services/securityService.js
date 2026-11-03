@@ -4,6 +4,7 @@ const DEVICE_ID_PATTERN = /^[A-Za-z0-9_-]{1,48}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const HEX_32 = /^[0-9a-f]{32}$/;
 const HEX_64 = /^[0-9a-f]{64}$/;
+const LEVEL_NAMES = ['normal', 'waspada', 'bahaya'];
 
 function secretForDevice(deviceId) {
   // One-device prototype. Replace with a server-side per-device secret lookup
@@ -28,24 +29,21 @@ function checkSignature(canonical, signature, secret) {
 }
 
 function canonicalReading(p) {
-  if (p.version === 3) {
-    return [
-      'r3', p.device_id, p.nonce, p.timestamp, Number(p.time_valid),
-      p.co_ppm, p.co2_ppm, p.co_peak_ppm, p.co2_peak_ppm,
-      p.co_peak_second, p.co2_peak_second, p.status, p.buzzer_state,
-      p.window_status === null ? '-' : p.window_status,
-      p.event_id || '-', Number(p.demo),
-    ].join('|');
-  }
+  // Versi 4 menandatangani co_level|co2_level sebagai ganti status.
+  const gas = p.version === 4
+    ? [p.co_level, p.co2_level]
+    : [p.status];
   return [
-    'r2', p.device_id, p.nonce, p.timestamp, Number(p.time_valid),
-    p.co_ppm, p.co2_ppm, p.status, p.buzzer_state,
-    p.window_status, p.event_id || '-', Number(p.demo),
+    p.version === 4 ? 'r4' : 'r3', p.device_id, p.nonce, p.timestamp, Number(p.time_valid),
+    p.co_ppm, p.co2_ppm, p.co_peak_ppm, p.co2_peak_ppm,
+    p.co_peak_second, p.co2_peak_second, ...gas, p.buzzer_state,
+    p.window_status === null ? '-' : p.window_status,
+    p.event_id || '-', Number(p.demo),
   ].join('|');
 }
 
 function verifyReading(p, nowSeconds = Math.floor(Date.now() / 1000)) {
-  if (!p || ![2, 3].includes(p.version) || !DEVICE_ID_PATTERN.test(p.device_id || '')) {
+  if (!p || ![3, 4].includes(p.version) || !DEVICE_ID_PATTERN.test(p.device_id || '')) {
     throw new Error('Versi atau identitas perangkat tidak valid');
   }
   if (typeof p.nonce !== 'string' || !HEX_32.test(p.nonce)) throw new Error('Nonce tidak valid');
@@ -62,20 +60,28 @@ function verifyReading(p, nowSeconds = Math.floor(Date.now() / 1000)) {
       throw new Error(`${name} tidak valid`);
     }
   }
-  if (p.version === 3) {
-    for (const [peak, current, offset] of [
-      ['co_peak_ppm', 'co_ppm', 'co_peak_second'],
-      ['co2_peak_ppm', 'co2_ppm', 'co2_peak_second'],
-    ]) {
-      if (!Number.isSafeInteger(p[peak]) || p[peak] < p[current] || p[peak] > 100000 ||
-          !Number.isSafeInteger(p[offset]) || p[offset] < 1 || p[offset] > 5) {
-        throw new Error(`Jendela telemetry 5 detik tidak valid: ${peak}/${offset}`);
-      }
+  for (const [peak, current, offset] of [
+    ['co_peak_ppm', 'co_ppm', 'co_peak_second'],
+    ['co2_peak_ppm', 'co2_ppm', 'co2_peak_second'],
+  ]) {
+    if (!Number.isSafeInteger(p[peak]) || p[peak] < p[current] || p[peak] > 100000 ||
+        !Number.isSafeInteger(p[offset]) || p[offset] < 1 || p[offset] > 5) {
+      throw new Error(`Jendela telemetry 5 detik tidak valid: ${peak}/${offset}`);
     }
   }
-  if (!['normal', 'waspada', 'bahaya'].includes(p.status)) throw new Error('Status gas tidak valid');
+  if (p.version === 4) {
+    for (const name of ['co_level', 'co2_level']) {
+      if (!Number.isInteger(p[name]) || p[name] < 0 || p[name] > 2) throw new Error(`${name} tidak valid`);
+    }
+    p.status = LEVEL_NAMES[Math.max(p.co_level, p.co2_level)];   // status tidak dikirim; dihitung di sini
+  } else {
+    if (process.env.ACCEPT_V3 === 'false') throw new Error('Versi 3 ditolak (ACCEPT_V3=false)');
+    if (!LEVEL_NAMES.includes(p.status)) throw new Error('Status gas tidak valid');
+    p.co_level = 0;                                 // versi 3 tidak membawa jenis gas: dianggap CO2
+    p.co2_level = LEVEL_NAMES.indexOf(p.status);
+  }
   if (!['on', 'off'].includes(p.buzzer_state)) throw new Error('Status buzzer tidak valid');
-  if (!(p.version === 3 && p.window_status === null) &&
+  if (p.window_status !== null &&
       (!Number.isSafeInteger(p.window_status) || p.window_status < 0 || p.window_status > 100)) {
     throw new Error('Posisi jendela tidak valid');
   }
@@ -97,53 +103,6 @@ function signedDataAck(deviceId, nonce) {
   return p;
 }
 
-function signedCommand(deviceId, commandId, alertId, issuedAt) {
-  const p = {
-    version: 2, device_id: deviceId, command_id: commandId,
-    alert_id: alertId, action: 'MUTE_BUZZER', issued_at: issuedAt,
-  };
-  p.signature = signatureFor(
-    `cmd2|${deviceId}|${commandId}|${alertId}|MUTE_BUZZER|${issuedAt}`,
-    secretForDevice(deviceId),
-  );
-  return p;
-}
-
-function signedWindowCommand(deviceId, commandId, alertId, action, issuedAt) {
-  if (!['WINDOW_OPEN', 'WINDOW_CLOSE'].includes(action) ||
-      !UUID_PATTERN.test(commandId || '') || !UUID_PATTERN.test(alertId || '')) {
-    throw new Error('Perintah jendela butuh action dan UUID yang valid');
-  }
-  const p = { version: 3, device_id: deviceId, command_id: commandId,
-    alert_id: alertId, action, issued_at: issuedAt };
-  p.signature = signatureFor(
-    `cmd3|${deviceId}|${commandId}|${alertId}|${action}|${issuedAt}`,
-    secretForDevice(deviceId),
-  );
-  return p;
-}
-
-function verifyCommandAck(p) {
-  if (!p || ![2, 3].includes(p.version) || !DEVICE_ID_PATTERN.test(p.device_id || '') ||
-      !UUID_PATTERN.test(p.command_id || '') || !UUID_PATTERN.test(p.alert_id || '')) {
-    throw new Error('ACK command tidak valid');
-  }
-  let canonical;
-  if (p.version === 2) {
-    if (!['success', 'failed'].includes(p.result)) throw new Error('ACK v2 tidak valid');
-    canonical = `cmdack2|${p.device_id}|${p.command_id}|${p.alert_id}|${p.result}`;
-  } else {
-    if (!['WINDOW_OPEN', 'WINDOW_CLOSE'].includes(p.action) ||
-        !['received', 'failed'].includes(p.result)) throw new Error('ACK jendela tidak valid');
-    canonical = `cmdack3|${p.device_id}|${p.command_id}|${p.alert_id}|${p.action}|${p.result}`;
-  }
-  if (!checkSignature(canonical, p.signature, secretForDevice(p.device_id))) {
-    throw new Error('HMAC ACK command salah');
-  }
-  return p;
-}
-
 module.exports = {
-  verifyReading, signedDataAck, signedCommand, signedWindowCommand, verifyCommandAck,
-  canonicalReading, signatureFor, checkSignature,
+  verifyReading, signedDataAck, canonicalReading, signatureFor, checkSignature,
 };

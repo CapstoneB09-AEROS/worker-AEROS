@@ -2,17 +2,19 @@
 
 Penghubung MQTT ke Supabase untuk perangkat AEROS. Proses ini harus **berjalan terus** (bukan serverless, tidak butuh port HTTP).
 
-Alur: ESP32 -> HiveMQ Cloud -> worker ini -> Supabase. Worker memeriksa tanda tangan HMAC, menyimpan ke `sensor_readings`, memperbarui `device_state` dan `alert_logs`, membalas ACK ke ESP, dan membaca perintah "Saya Tahu" dari `actuator_logs`.
+Alur: ESP32 -> HiveMQ Cloud -> worker ini -> Supabase. Worker memeriksa tanda tangan HMAC, menyimpan ke `sensor_readings`, mencatat tiap peringatan di `alert_logs` (dibuat sebelum bacaan yang menunjuknya), memperbarui `device_state`, dan membalas ACK ke ESP. Menerima pesan telemetri versi 3 dan 4. Fitur "Saya Tahu" sudah dibuang.
 
 ## Variabel lingkungan
 Isi di dasbor layanan hosting (atau `.env` untuk lokal). **Jangan di-commit.** Contoh: [.env.example](.env.example).
 
 | Variabel | Isi |
 |---|---|
-| `HIVEMQ_HOST`, `HIVEMQ_PORT` (8883), `HIVEMQ_USERNAME`, `HIVEMQ_PASSWORD` | pengguna **worker** di HiveMQ: subscribe `aeros/#` (worker memasang `aeros/data`, `aeros/+/telemetry`, `aeros/+/status`, `aeros/+/cmd/ack`, `aeros/+/command/ack`); publish `aeros/+/telemetry/ack` dan `aeros/+/cmd` |
+| `HIVEMQ_HOST`, `HIVEMQ_PORT` (8883), `HIVEMQ_USERNAME`, `HIVEMQ_PASSWORD` | pengguna **worker** di HiveMQ: subscribe `aeros/+/telemetry` dan `aeros/+/status`; publish `aeros/+/telemetry/ack` |
 | `HMAC_SECRET` | sama persis dengan `HMAC_SECRET` di `secrets.h` ESP |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | proyek Supabase; kunci ini hanya untuk worker |
-| `MAX_OFFLINE_AGE_DAYS`, `MAX_FUTURE_SKEW_SECONDS`, `LIVE_STALENESS_SECONDS`, `COMMAND_RETRY_MS`, `POLL_INTERVAL_MS` | 30, 120, 90, 10000, 5000 |
+| `WRITE_STATUS_COLUMN` | bawaan `true`. **Isi `false` bila SQL 004 (4b) sudah dijalankan**, karena `sensor_readings.status` lalu menjadi kolom turunan dan menulisnya ditolak database. |
+| `ACCEPT_V3` | bawaan `true`. Ubah ke `false` setelah ESP versi 4 terpasang, supaya pesan versi 3 ditolak. |
+| `ALLOW_DEMO_READINGS` | opsional, `true` hanya bila data simulasi (`demo`) boleh disimpan |
 
 ## Jalankan lokal
 ```bash
@@ -27,6 +29,6 @@ Log yang benar: `[MQTT] HiveMQ Cloud TLS terhubung`, `[MQTT] Subscribe: ...`, la
 Layanan harus mendukung **background worker / proses terus-menerus** (bukan fungsi serverless). Ada [Dockerfile](Dockerfile) (`CMD node mqtt-worker.js`); atau pakai Node langsung dengan perintah mulai `npm start`.
 
 ## Aturan penting
-- Hanya **satu** worker aktif untuk tiap perangkat. Dua worker sekaligus membuat perintah "Saya Tahu" bisa diproses ganda. Matikan worker di laptop sebelum yang di hosting dinyalakan.
-- Database harus sudah dijalankan: [sql/001-minimal-v3.sql](sql/001-minimal-v3.sql) dan [sql/002-device-state.sql](sql/002-device-state.sql).
-- Uji: `npm test`.
+- Hanya **satu** worker aktif untuk tiap perangkat. Dua worker sekaligus memproses pesan yang sama dua kali (bacaan ganda ditolak lewat `nonce`, tetapi log dan beban jadi dobel). Matikan worker di laptop sebelum yang di hosting dinyalakan.
+- Database harus sudah dijalankan: [sql/003-mvp-4a-tambahan.sql](sql/003-mvp-4a-tambahan.sql) (kolom `co_level`, `co2_level`, `buzzer_state`, `event_id` dan view `v_alerts`) sebelum worker ini dipasang. [sql/004-mvp-4b-pemutusan.sql](sql/004-mvp-4b-pemutusan.sql) merusak worker lama; jalankan bersama `WRITE_STATUS_COLUMN=false`. Berkas 001 dan 002 adalah riwayat.
+- Uji: `npm test`. Uji kirim pesan tanpa ESP: `node publish-uji.js` (hanya mencetak; `--kirim` untuk mengirim).

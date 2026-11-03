@@ -19,19 +19,6 @@ async function mirrorRecentTelemetry(p, now = Date.now()) {
     .select('active_alert_id').eq('device_id', p.device_id).maybeSingle();
   if (previousError) throw previousError;
 
-  if (p.event_id) {
-    const { data: existing, error: lookupError } = await supabase.from('alert_logs')
-      .select('id,device_id').eq('id', p.event_id).maybeSingle();
-    if (lookupError) throw lookupError;
-    if (existing && existing.device_id !== p.device_id) throw Error('event_id milik perangkat lain');
-    if (!existing) {
-      const { error } = await supabase.from('alert_logs').insert({
-        id: p.event_id, device_id: p.device_id, alert_type: p.status,
-      });
-      // Concurrent delivery may race; the primary key settles duplicates.
-      if (error && error.code !== '23505') throw error;
-    }
-  }
   if (previous?.active_alert_id && previous.active_alert_id !== p.event_id) {
     // A new alarm episode or a return to normal closes the previous episode.
     const result = await supabase.from('alert_logs')
@@ -51,12 +38,16 @@ async function mirrorRecentTelemetry(p, now = Date.now()) {
     active_alert_id: p.event_id,
     updated_at: new Date(now).toISOString(),
   };
-  if (previous?.active_alert_id !== p.event_id) {
-    patch.ack_driver = false;
-    patch.ack_at = null;
-  }
   const { error } = await supabase.from('device_state').upsert(patch, { onConflict: 'device_id' });
   if (error) throw error;
+
+  // Peringatan dibuat lebih dulu oleh pastikanPeringatan (sensorDataHandler). Di sini hanya
+  // alert_type (sementara, demi aplikasi lama) yang dinaikkan satu arah: waspada -> bahaya.
+  if (p.event_id && p.status === 'bahaya') {
+    const result = await supabase.from('alert_logs').update({ alert_type: 'bahaya' })
+      .eq('id', p.event_id).eq('device_id', p.device_id).neq('alert_type', 'bahaya');
+    if (result.error) throw result.error;
+  }
   return true;
 }
 
